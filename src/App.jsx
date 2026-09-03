@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useMsal, AuthenticatedTemplate, UnauthenticatedTemplate } from '@azure/msal-react';
-import { loginRequest, apiRequest } from './authConfig';
+import { loginRequest } from './authConfig';
+import { apiFetch } from './api';
 
 const API_URL = "https://dnhrkpbts1.execute-api.us-east-1.amazonaws.com/ordenes";
 
@@ -15,7 +16,7 @@ function LoginScreen() {
     <div style={{ padding: '50px', textAlign: 'center', fontFamily: 'sans-serif' }}>
       <h1>Portal TallerPro360</h1>
       <p>Acceso exclusivo para personal autorizado</p>
-      <button 
+      <button
         onClick={handleLogin}
         style={{ padding: '12px 24px', fontSize: '16px', cursor: 'pointer', backgroundColor: '#0078d4', color: 'white', border: 'none', borderRadius: '4px' }}
       >
@@ -23,6 +24,14 @@ function LoginScreen() {
       </button>
     </div>
   );
+}
+
+async function fetchOrdenes() {
+  const respuesta = await apiFetch(API_URL);
+  if (!respuesta || !respuesta.ok) {
+    throw new Error("No se pudieron obtener las órdenes");
+  }
+  return respuesta.json();
 }
 
 function TecnicoPanel() {
@@ -35,15 +44,9 @@ function TecnicoPanel() {
 
   const [ordenes, setOrdenes] = useState([]);
   const [estado, setEstado] = useState("cargando");
-  const [accessToken, setAccessToken] = useState("");
-  const [tokenError, setTokenError] = useState("");
 
   useEffect(() => {
-    fetch(API_URL)
-      .then((r) => {
-        if (!r.ok) throw new Error("HTTP " + r.status);
-        return r.json();
-      })
+    fetchOrdenes()
       .then((datos) => {
         setOrdenes(datos);
         setEstado("listo");
@@ -58,27 +61,11 @@ function TecnicoPanel() {
     instance.logoutRedirect();
   };
 
-  const handleObtenerAccessToken = async () => {
-    setTokenError("");
-    try {
-      const resultado = await instance.acquireTokenSilent({
-        ...apiRequest,
-        account: account
-      });
-      console.log("ID Token:", account.idToken);
-      console.log("Access Token (API):", resultado.accessToken);
-      setAccessToken(resultado.accessToken);
-    } catch (err) {
-      console.error(err);
-      setTokenError("Error al obtener el token: " + err.message);
-    }
-  };
-
   return (
     <div style={{ padding: '30px', fontFamily: 'sans-serif', maxWidth: '800px', margin: '0 auto' }}>
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid #ccc', paddingBottom: '10px' }}>
         <h2>TallerPro360 - Panel del Técnico</h2>
-        <button 
+        <button
           onClick={handleLogout}
           style={{ padding: '8px 16px', backgroundColor: '#d9534f', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
         >
@@ -91,36 +78,17 @@ function TecnicoPanel() {
         <p><strong>Correo:</strong> {correoTecnico}</p>
       </section>
 
-      <section style={{ marginTop: '30px', padding: '15px', backgroundColor: '#eef7ff', borderRadius: '6px' }}>
-        <h3>Actividad 1.3.1 - Access Token para la API</h3>
-        <button
-          onClick={handleObtenerAccessToken}
-          style={{ padding: '10px 18px', backgroundColor: '#107c10', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}
-        >
-          Obtener Access Token de la API
-        </button>
-        {tokenError && <p style={{ color: '#d9534f' }}>{tokenError}</p>}
-        {accessToken && (
-          <div style={{ marginTop: '15px' }}>
-            <p><strong>Access Token (revisa también la consola del navegador):</strong></p>
-            <textarea
-              readOnly
-              value={accessToken}
-              style={{ width: '100%', height: '120px', fontFamily: 'monospace', fontSize: '12px' }}
-            />
-          </div>
-        )}
-      </section>
-
       <section style={{ marginTop: '30px' }}>
-        <h3>Órdenes Asignadas</h3>
+        <h3>Órdenes Asignadas <small>(datos de ejemplo)</small></h3>
 
         {estado === "cargando" && (
           <p style={{ color: '#0078d4', fontWeight: 'bold' }}>Cargando órdenes desde la API...</p>
         )}
 
         {estado === "error" && (
-          <p style={{ color: '#d9534f', fontWeight: 'bold' }}>Error al obtener las órdenes desde la API.</p>
+          <p style={{ color: '#d9534f', fontWeight: 'bold' }}>
+            No se pudieron cargar las órdenes. Revisa la sesión o vuelve a intentarlo.
+          </p>
         )}
 
         {estado === "listo" && (
