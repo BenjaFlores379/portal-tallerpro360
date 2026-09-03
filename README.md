@@ -1,30 +1,3 @@
-# Portal TallerPro360
-
-Portal de técnicos con autenticación real contra Microsoft Entra External ID, y consumo de una API propia protegida con Access Tokens. Proyecto desarrollado para la asignatura **DSY1107 - Cloud Native 1** (Duoc UC).
-
-## Stack
-
-| Capa | Tecnología | Por qué |
-|---|---|---|
-| Frontend | React + Vite | Compila a archivos estáticos, sin necesidad de servidor propio |
-| Autenticación | `@azure/msal-browser` | Librería oficial de Microsoft para el flujo OAuth2/OIDC desde el navegador (PKCE, redirect, manejo de sesión) |
-| Identidad | Microsoft Entra External ID | Proveedor de identidad como servicio (IDaaS); no se programa login propio |
-| Hosting | AWS S3 + CloudFront | Archivos estáticos servidos por HTTPS, sin servidor de aplicaciones |
-| API | AWS Lambda (Node.js) | Endpoint REST que expone las órdenes de trabajo |
-
-No hay base de datos, backend tradicional ni roles/permisos: es intencional, está fuera del alcance definido por las guías del curso.
-
-## Arquitectura
-
-Usuario → Portal (React, en CloudFront)
-→ botón "Iniciar sesión" → loginRedirect() saca al navegador hacia el tenant
-→ usuario se autentica en Entra External ID (la app nunca ve la contraseña)
-→ tenant redirige de vuelta con el token
-→ getAllAccounts() confirma sesión → se muestra el panel
-→ idTokenClaims entrega nombre y correo reales
-→ panel llama a la API (Lambda) para traer las órdenes
-→ logoutRedirect() cierra sesión y vuelve al login
-
 
 ## Datos de configuración (no sensibles)
 
@@ -38,6 +11,7 @@ Tenant ID y Client ID son identificadores públicos por diseño en aplicaciones 
 | Client ID — Portal (SPA) | `3fdc00e5-5ecb-451a-857a-da2b411959c8` |
 | Client ID — API | `b68d809d-f8b1-4c8d-a890-579acd269020` |
 | Endpoint API | `https://dnhrkpbts1.execute-api.us-east-1.amazonaws.com/ordenes` |
+| Orígenes CORS permitidos | `http://localhost:5173`, `http://localhost:5174`, dominio de producción S3 |
 
 ## Cómo correr el proyecto en local
 
@@ -65,6 +39,7 @@ Sube el contenido de `dist/` (no la carpeta en sí) a un bucket S3 privado, serv
 | 1.2.10 — Portal TallerPro360 | Login/logout, panel protegido, publicación en S3 + CloudFront | ✅ Completa |
 | 1.2.11 — Conexión con la API | Panel consumiendo la Lambda de órdenes | ✅ Completa |
 | 1.3.1 — Dos tokens, dos propósitos | Registro de app `TallerPro360-API`, scope `Ordenes.Leer`, Access Token propio para la API | ✅ Completa |
+| 1.3.2 — Que el token viaje solo | Interceptor `apiFetch` que adjunta el Access Token automáticamente en cada llamada a la API | ✅ Completa |
 
 ### Detalle de la 1.3.1 (completa)
 
@@ -87,6 +62,33 @@ Objetivo: que la Lambda deje de aceptar peticiones sin credencial y exija un Acc
 
 El scope completo expuesto por la API: `api://b68d809d-f8b1-4c8d-a890-579acd269020/Ordenes.Leer`
 
+### Detalle de la 1.3.2 (completa)
+
+Objetivo: que el Access Token viaje automáticamente en toda llamada a la API, sin que el código que pide las órdenes tenga que saber nada de identidad ni tokens.
+
+- [x] Interceptor `apiFetch` en `src/api.js`: obtiene el token con `acquireTokenSilent` y lo adjunta como `Authorization: Bearer <token>`
+- [x] `fetchOrdenes` en `App.jsx` no menciona MSAL ni tokens — solo llama a `apiFetch`
+- [x] Manejo de fallo: si `acquireTokenSilent` lanza `InteractionRequiredAuthError`, se reintenta con `acquireTokenRedirect` en vez de romper la app
+- [x] Verificado en la pestaña Network del navegador: la petición `GET /ordenes` sale con status `200` y la cabecera `authorization: Bearer eyJ...` presente
+
+**Bug encontrado y resuelto — CORS en API Gateway (HTTP API):**
+
+Al agregar la cabecera `Authorization`, el navegador dispara un preflight `OPTIONS` que la API debe responder con las cabeceras CORS correctas. La consola web de AWS API Gateway guardó `Access-Control-Allow-Headers` como un único string con comas (`"content-type, authorization, x-amz-date, x-api-key"`) en vez de un array de 4 valores separados, lo que hacía fallar el preflight silenciosamente (`HTTP 204` sin ninguna cabecera CORS en la respuesta).
+
+Se corrigió actualizando la configuración directamente por AWS CLI:
+
+```bash
+aws apigatewayv2 update-api --api-id dnhrkpbts1 --cors-configuration AllowOrigins="https://tallerpro360-benjamin-2026.s3.us-east-1.amazonaws.com,http://localhost:5173,http://localhost:5174",AllowMethods="GET,OPTIONS",AllowHeaders="content-type,authorization,x-amz-date,x-api-key",AllowCredentials=false,MaxAge=0
+```
+
+Verificado con:
+
+```bash
+curl -i -X OPTIONS https://dnhrkpbts1.execute-api.us-east-1.amazonaws.com/ordenes -H "Origin: http://localhost:5174" -H "Access-Control-Request-Method: GET" -H "Access-Control-Request-Headers: authorization"
+```
+
+Lección: en HTTP API de API Gateway, si agregas o cambias cabeceras autenticadas (`Authorization`) después de configurar CORS, hay que revisar que el preflight las acepte — no basta con configurarlo una vez, y conviene validar por CLI si la consola web se comporta de forma rara.
+
 ## Requisitos cumplidos (actividad 1.2.10)
 
 - **R1** Dos pantallas: acceso (solo botón) y panel de técnico
@@ -102,6 +104,8 @@ El scope completo expuesto por la API: `api://b68d809d-f8b1-4c8d-a890-579acd2690
 - `knownAuthorities` en `authConfig.js` declara ambos dominios (subdominio y Tenant ID en `.ciamlogin.com`), porque los tenants External ID emiten tokens cuyo emisor usa el GUID, no el nombre.
 - El `redirectUri` se calcula con `window.location.origin`, para que el mismo build funcione tanto en local como en CloudFront sin recompilar.
 - El ID Token y el Access Token tienen distinto `aud` a propósito: uno identifica al usuario ante el portal, el otro autoriza al portal a llamar a la API con un permiso concreto (`scp`).
+- La instancia de MSAL vive en `src/msalInstance.js`, compartida entre `main.jsx` (arranque de la app) y `api.js` (interceptor), para no duplicarla.
+- El interceptor `apiFetch` nunca guarda el Access Token en una variable propia: lo pide en cada llamada vía `acquireTokenSilent`, que usa la caché interna de MSAL y renueva en segundo plano cuando expira.
 
 # 🚀 Guía de instalación y funcionamiento
 
